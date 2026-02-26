@@ -1,13 +1,12 @@
 from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime, timezone
 
 app = FastAPI()
 
-# メモリ保存用（超シンプル）
-last_received = 0
-last_time = None
+all_events = []
 
 
 class EventItem(BaseModel):
@@ -26,35 +25,44 @@ class BatchRequest(BaseModel):
 
 
 # ---------------------------
-# 見える化ページ
+# ダッシュボード
 # ---------------------------
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
 async def dashboard():
+
+    rows = ""
+    for e in reversed(all_events):
+        dt = datetime.fromtimestamp(e / 1000, tz=timezone.utc)
+        rows += f"<tr><td>{e}</td><td>{dt}</td></tr>"
 
     return f"""
     <html>
-        <head>
-            <meta http-equiv="refresh" content="2">
-            <title>IoT Monitor</title>
-        </head>
-        <body style="font-family: Arial; text-align:center; margin-top:100px;">
-            <h1>📡 IoT Monitor</h1>
-            <h2>受信回数: {last_received}</h2>
-            <h3>最終受信時刻: {last_time}</h3>
-        </body>
+    <head>
+        <meta http-equiv="refresh" content="2">
+        <title>IoT Monitor</title>
+    </head>
+    <body style="font-family: Arial; margin:40px;">
+        <h1>📡 IoT Monitor</h1>
+        <h2>累計受信数: {len(all_events)}</h2>
+        <table border="1" cellpadding="5">
+            <tr>
+                <th>ts_ms</th>
+                <th>UTC Time</th>
+            </tr>
+            {rows}
+        </table>
+    </body>
     </html>
     """
 
 
 # ---------------------------
-# データ受信
+# 受信API
 # ---------------------------
 @app.post("/api/iot/events")
 async def receive_events(batch: BatchRequest):
 
-    global last_received, last_time
+    for e in batch.events:
+        all_events.append(e.ts_ms)
 
-    last_received = len(batch.events)
-    last_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    return {"status": "ok"}
+    return {"status": "ok", "total": len(all_events)}ç
