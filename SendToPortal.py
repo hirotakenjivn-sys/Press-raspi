@@ -14,6 +14,8 @@ INACTIVE_LEVEL = 0
 
 GLITCH_FILTER_US = 3000
 MIN_INTERVAL_MS = 120
+MIN_PULSE_MS = 20          # ← 追加（ノイズ除去）
+STARTUP_IGNORE_SEC = 5     # ← 追加（起動直後無視）
 
 DB_FLUSH_INTERVAL = 3
 API_SEND_INTERVAL = 20
@@ -35,6 +37,8 @@ buffer_lock = threading.Lock()
 db_lock = threading.Lock()
 stop_event = threading.Event()
 last_api_send = 0
+
+start_time = time.time()   # ← 起動時間記録
 
 # =========================
 # SQLite
@@ -63,18 +67,29 @@ db_conn = init_db()
 def gpio_callback(gpio, level, tick):
     global press_tick, last_valid_tick, stroke_count
 
-    # 立ち上がり（press）
+    # ------------------------
+    # 起動直後は無視
+    # ------------------------
+    if time.time() - start_time < STARTUP_IGNORE_SEC:
+        return
+
+    # 立ち上がり
     if level == ACTIVE_LEVEL:
         press_tick = tick
         return
 
-    # 立ち下がり（release）
+    # 立ち下がり
     if level == INACTIVE_LEVEL and press_tick is not None:
 
         pulse_us = pigpio.tickDiff(press_tick, tick)
         pulse_ms = pulse_us / 1000.0
 
-        # 多重防止
+        # 最小パルス幅チェック（ノイズ除去）
+        if pulse_ms < MIN_PULSE_MS:
+            press_tick = None
+            return
+
+        # 最小間隔チェック
         if last_valid_tick is not None:
             interval = pigpio.tickDiff(last_valid_tick, tick) / 1000.0
             if interval < MIN_INTERVAL_MS:
@@ -187,12 +202,10 @@ def main():
     threading.Thread(target=db_flush_loop, daemon=True).start()
     threading.Thread(target=api_sender_loop, daemon=True).start()
 
-    print("Press Counter Started (pulse width enabled)")
+    print("Press Counter Started (Noise Protected)")
 
     while True:
         time.sleep(1)
 
 if __name__ == "__main__":
     main()
-
-
