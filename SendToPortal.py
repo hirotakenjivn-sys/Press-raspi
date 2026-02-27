@@ -8,14 +8,19 @@ from pathlib import Path
 import pigpio
 import requests
 
+# =========================
+# GPIO設定（現在の配線用）
+# GPIO27 ── スイッチ ── GND
+# =========================
 GPIO_PIN = 27
-ACTIVE_LEVEL = 1
-INACTIVE_LEVEL = 0
 
-GLITCH_FILTER_US = 3000
+ACTIVE_LEVEL = 0      # 押したとき LOW
+INACTIVE_LEVEL = 1    # 通常 HIGH
+
+GLITCH_FILTER_US = 1000
 MIN_INTERVAL_MS = 120
-MIN_PULSE_MS = 20          # ← 追加（ノイズ除去）
-STARTUP_IGNORE_SEC = 5     # ← 追加（起動直後無視）
+MIN_PULSE_MS = 10
+STARTUP_IGNORE_SEC = 5
 
 DB_FLUSH_INTERVAL = 3
 API_SEND_INTERVAL = 20
@@ -38,7 +43,7 @@ db_lock = threading.Lock()
 stop_event = threading.Event()
 last_api_send = 0
 
-start_time = time.time()   # ← 起動時間記録
+start_time = time.time()
 
 # =========================
 # SQLite
@@ -67,29 +72,25 @@ db_conn = init_db()
 def gpio_callback(gpio, level, tick):
     global press_tick, last_valid_tick, stroke_count
 
-    # ------------------------
-    # 起動直後は無視
-    # ------------------------
+    # 起動直後無視
     if time.time() - start_time < STARTUP_IGNORE_SEC:
         return
 
-    # 立ち上がり
+    # 押した瞬間（LOW）
     if level == ACTIVE_LEVEL:
         press_tick = tick
         return
 
-    # 立ち下がり
+    # 離した瞬間（HIGH）
     if level == INACTIVE_LEVEL and press_tick is not None:
 
         pulse_us = pigpio.tickDiff(press_tick, tick)
         pulse_ms = pulse_us / 1000.0
 
-        # 最小パルス幅チェック（ノイズ除去）
         if pulse_ms < MIN_PULSE_MS:
             press_tick = None
             return
 
-        # 最小間隔チェック
         if last_valid_tick is not None:
             interval = pigpio.tickDiff(last_valid_tick, tick) / 1000.0
             if interval < MIN_INTERVAL_MS:
@@ -194,15 +195,19 @@ def main():
         raise RuntimeError("pigpiod not running")
 
     pi.set_mode(GPIO_PIN, pigpio.INPUT)
-    pi.set_pull_up_down(GPIO_PIN, pigpio.PUD_DOWN)
+
+    # ★ ここが重要 ★
+    pi.set_pull_up_down(GPIO_PIN, pigpio.PUD_UP)
+
     pi.set_glitch_filter(GPIO_PIN, GLITCH_FILTER_US)
 
-    pi.callback(GPIO_PIN, pigpio.EITHER_EDGE, gpio_callback)
+    # コールバック参照保持
+    cb = pi.callback(GPIO_PIN, pigpio.EITHER_EDGE, gpio_callback)
 
     threading.Thread(target=db_flush_loop, daemon=True).start()
     threading.Thread(target=api_sender_loop, daemon=True).start()
 
-    print("Press Counter Started (Noise Protected)")
+    print("Press Counter Started (PUD_UP mode)")
 
     while True:
         time.sleep(1)
