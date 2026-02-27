@@ -65,4 +65,4 @@ async def receive_events(batch: BatchRequest):
     for e in batch.events:
         all_events.append(e.ts_ms)
 
-    return {"status": "ok", "total": len(all_events)}ç
+    return {"status": "ok", "total": len(all_events)}
