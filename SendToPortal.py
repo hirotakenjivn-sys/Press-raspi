@@ -9,7 +9,7 @@ import pigpio
 import requests
 
 # =========================
-# GPIO設定（現在の配線用）
+# GPIO設定
 # GPIO27 ── スイッチ ── GND
 # =========================
 GPIO_PIN = 27
@@ -26,7 +26,9 @@ DB_FLUSH_INTERVAL = 3
 API_SEND_INTERVAL = 20
 API_BATCH_SIZE = 100
 
-API_URL = "http://192.168.50.63:8000/api/iot/events"
+# ★ 修正済みIP ★
+API_URL = "http://192.168.2.205:8000/api/iot/events"
+
 DB_PATH = Path(__file__).with_name("press_events.db")
 
 pi = None
@@ -46,7 +48,7 @@ last_api_send = 0
 start_time = time.time()
 
 # =========================
-# SQLite
+# SQLite初期化
 # =========================
 def init_db():
     conn = sqlite3.connect(DB_PATH, timeout=30, check_same_thread=False)
@@ -72,16 +74,15 @@ db_conn = init_db()
 def gpio_callback(gpio, level, tick):
     global press_tick, last_valid_tick, stroke_count
 
-    # 起動直後無視
     if time.time() - start_time < STARTUP_IGNORE_SEC:
         return
 
-    # 押した瞬間（LOW）
+    # 押した瞬間
     if level == ACTIVE_LEVEL:
         press_tick = tick
         return
 
-    # 離した瞬間（HIGH）
+    # 離した瞬間
     if level == INACTIVE_LEVEL and press_tick is not None:
 
         pulse_us = pigpio.tickDiff(press_tick, tick)
@@ -106,7 +107,7 @@ def gpio_callback(gpio, level, tick):
         with buffer_lock:
             ram_buffer.append(ts)
 
-        print(f"[COUNT] {stroke_count}   pulse={pulse_ms:.2f}ms")
+        print(f"[COUNT] {stroke_count}  pulse={pulse_ms:.2f}ms")
 
 # =========================
 # DB Flush
@@ -165,6 +166,7 @@ def api_sender_loop():
         try:
             r = http.post(API_URL, json=payload, timeout=5)
             if r.status_code == 200:
+
                 with db_lock:
                     cur = db_conn.cursor()
                     cur.executemany(
@@ -176,7 +178,7 @@ def api_sender_loop():
                 sent_total += batch_count
                 last_api_send = now
 
-                print(f"[API] {batch_count}   ({sent_total} / {stroke_count})")
+                print(f"[API] {batch_count}  ({sent_total}/{stroke_count})")
 
             else:
                 print("[API ERROR]", r.status_code, r.text)
@@ -195,19 +197,15 @@ def main():
         raise RuntimeError("pigpiod not running")
 
     pi.set_mode(GPIO_PIN, pigpio.INPUT)
-
-    # ★ ここが重要 ★
     pi.set_pull_up_down(GPIO_PIN, pigpio.PUD_UP)
-
     pi.set_glitch_filter(GPIO_PIN, GLITCH_FILTER_US)
 
-    # コールバック参照保持
     cb = pi.callback(GPIO_PIN, pigpio.EITHER_EDGE, gpio_callback)
 
     threading.Thread(target=db_flush_loop, daemon=True).start()
     threading.Thread(target=api_sender_loop, daemon=True).start()
 
-    print("Press Counter Started (PUD_UP mode)")
+    print("Press Counter Started (Stable Version)")
 
     while True:
         time.sleep(1)
