@@ -27,7 +27,7 @@ API_SEND_INTERVAL = 20
 API_BATCH_SIZE = 100
 
 # ★ 修正済みIP ★
-API_URL = "http://192.168.2.205:8000/api/iot/events"
+API_URL = "http://192.168.50.63:8000/api/iot/events"
 
 DB_PATH = Path(__file__).with_name("press_events.db")
 
