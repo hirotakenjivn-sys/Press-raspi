@@ -12,7 +12,7 @@ import requests
 # GPIO設定
 # GPIO27 ── スイッチ ── GND
 # =========================
-GPIO_PIN = 27
+GPIO_PIN = 17
 
 ACTIVE_LEVEL = 0      # 押したとき LOW
 INACTIVE_LEVEL = 1    # 通常 HIGH
