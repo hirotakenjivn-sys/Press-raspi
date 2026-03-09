@@ -20,6 +20,7 @@ INACTIVE_LEVEL = 1    # 通常 HIGH
 GLITCH_FILTER_US = 1000
 MIN_INTERVAL_MS = 120
 MIN_PULSE_MS = 10
+MAX_PULSE_MS = 2000
 STARTUP_IGNORE_SEC = 5
 
 DB_FLUSH_INTERVAL = 3
@@ -88,7 +89,7 @@ def gpio_callback(gpio, level, tick):
         pulse_us = pigpio.tickDiff(press_tick, tick)
         pulse_ms = pulse_us / 1000.0
 
-        if pulse_ms < MIN_PULSE_MS:
+        if pulse_ms < MIN_PULSE_MS or pulse_ms > MAX_PULSE_MS:
             press_tick = None
             return
 
@@ -107,7 +108,7 @@ def gpio_callback(gpio, level, tick):
         with buffer_lock:
             ram_buffer.append(ts)
 
-        print(f"[COUNT] {stroke_count}  pulse={pulse_ms:.2f}ms")
+        print(f"[COUNT] {stroke_count}  pulse={pulse_ms:.2f}ms", flush=True)
 
 # =========================
 # DB Flush
@@ -136,6 +137,8 @@ def db_flush_loop():
 def api_sender_loop():
     global last_api_send, sent_total
     http = requests.Session()
+    api_err_count = 0
+    last_err_log = 0
 
     while not stop_event.is_set():
         time.sleep(1)
@@ -177,14 +180,23 @@ def api_sender_loop():
 
                 sent_total += batch_count
                 last_api_send = now
+                if api_err_count > 0:
+                    print(f"[API] recovered after {api_err_count} errors", flush=True)
+                api_err_count = 0
 
-                print(f"[API] {batch_count}  ({sent_total}/{stroke_count})")
+                print(f"[API] {batch_count}  ({sent_total}/{stroke_count})", flush=True)
 
             else:
-                print("[API ERROR]", r.status_code, r.text)
+                api_err_count += 1
+                if now - last_err_log >= 60:
+                    print(f"[API ERROR] {r.status_code} (x{api_err_count})", flush=True)
+                    last_err_log = now
 
         except Exception as e:
-            print("[API ERROR]", e)
+            api_err_count += 1
+            if now - last_err_log >= 60:
+                print(f"[API ERROR] {e} (x{api_err_count})", flush=True)
+                last_err_log = now
 
 # =========================
 # Main
@@ -205,7 +217,7 @@ def main():
     threading.Thread(target=db_flush_loop, daemon=True).start()
     threading.Thread(target=api_sender_loop, daemon=True).start()
 
-    print("Press Counter Started (Stable Version)")
+    print("Press Counter Started (Stable Version)", flush=True)
 
     while True:
         time.sleep(1)
