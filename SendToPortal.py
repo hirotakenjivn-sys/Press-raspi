@@ -5,12 +5,12 @@ import time
 import sqlite3
 import threading
 from pathlib import Path
-import pigpio
+import lgpio
 import requests
 
 # =========================
 # GPIO設定
-# GPIO27 ── スイッチ ── GND
+# GPIO_PIN ── スイッチ ── GND
 # =========================
 GPIO_PIN = 17
 
@@ -27,14 +27,28 @@ DB_FLUSH_INTERVAL = 3
 API_SEND_INTERVAL = 20
 API_BATCH_SIZE = 100
 
-# ★ 修正済みIP ★
 API_URL = "http://192.168.50.63:8000/api/iot/events"
 
 DB_PATH = Path(__file__).with_name("press_events.db")
+CONFIG_PATH = Path(__file__).with_name("config.txt")
 
-pi = None
-press_tick = None
-last_valid_tick = None
+# =========================
+# raspi_no をconfig.txtから読み込み
+# =========================
+def load_raspi_no():
+    try:
+        return CONFIG_PATH.read_text().strip()
+    except FileNotFoundError:
+        return "unknown"
+
+RASPI_NO = load_raspi_no()
+
+# =========================
+# グローバル変数
+# =========================
+chip = None
+press_ts = None
+last_valid_ts = None
 
 stroke_count = 0
 sent_total = 0
@@ -72,36 +86,36 @@ db_conn = init_db()
 # =========================
 # GPIO Callback
 # =========================
-def gpio_callback(gpio, level, tick):
-    global press_tick, last_valid_tick, stroke_count
+def gpio_callback(chip_handle, gpio, level, timestamp_ns):
+    global press_ts, last_valid_ts, stroke_count
 
     if time.time() - start_time < STARTUP_IGNORE_SEC:
         return
 
     # 押した瞬間
     if level == ACTIVE_LEVEL:
-        press_tick = tick
+        press_ts = timestamp_ns
         return
 
     # 離した瞬間
-    if level == INACTIVE_LEVEL and press_tick is not None:
+    if level == INACTIVE_LEVEL and press_ts is not None:
 
-        pulse_us = pigpio.tickDiff(press_tick, tick)
-        pulse_ms = pulse_us / 1000.0
+        pulse_ns = timestamp_ns - press_ts
+        pulse_ms = pulse_ns / 1_000_000.0
 
         if pulse_ms < MIN_PULSE_MS or pulse_ms > MAX_PULSE_MS:
-            press_tick = None
+            press_ts = None
             return
 
-        if last_valid_tick is not None:
-            interval = pigpio.tickDiff(last_valid_tick, tick) / 1000.0
-            if interval < MIN_INTERVAL_MS:
-                press_tick = None
+        if last_valid_ts is not None:
+            interval_ms = (timestamp_ns - last_valid_ts) / 1_000_000.0
+            if interval_ms < MIN_INTERVAL_MS:
+                press_ts = None
                 return
 
-        last_valid_tick = tick
+        last_valid_ts = timestamp_ns
         stroke_count += 1
-        press_tick = None
+        press_ts = None
 
         ts = int(time.time() * 1000)
 
@@ -159,7 +173,7 @@ def api_sender_loop():
             continue
 
         payload = {
-            "raspi_no": "raspi_01",
+            "raspi_no": RASPI_NO,
             "events": [{"ts_ms": r[1]} for r in rows]
         }
 
@@ -202,25 +216,27 @@ def api_sender_loop():
 # Main
 # =========================
 def main():
-    global pi
+    global chip
 
-    pi = pigpio.pi()
-    if not pi.connected:
-        raise RuntimeError("pigpiod not running")
-
-    pi.set_mode(GPIO_PIN, pigpio.INPUT)
-    pi.set_pull_up_down(GPIO_PIN, pigpio.PUD_UP)
-    pi.set_glitch_filter(GPIO_PIN, GLITCH_FILTER_US)
-
-    cb = pi.callback(GPIO_PIN, pigpio.EITHER_EDGE, gpio_callback)
+    chip = lgpio.gpiochip_open(0)
+    lgpio.gpio_claim_input(chip, GPIO_PIN, lgpio.SET_PULL_UP)
+    lgpio.gpio_set_debounce_micros(chip, GPIO_PIN, GLITCH_FILTER_US)
+    lgpio.gpio_claim_alert(chip, GPIO_PIN, lgpio.BOTH_EDGES)
+    cb = lgpio.callback(chip, GPIO_PIN, lgpio.BOTH_EDGES, gpio_callback)
 
     threading.Thread(target=db_flush_loop, daemon=True).start()
     threading.Thread(target=api_sender_loop, daemon=True).start()
 
-    print("Press Counter Started (Stable Version)", flush=True)
+    print(f"Press Counter Started [{RASPI_NO}]", flush=True)
 
-    while True:
-        time.sleep(1)
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        cb.cancel()
+        lgpio.gpiochip_close(chip)
 
 if __name__ == "__main__":
     main()
