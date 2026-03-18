@@ -82,23 +82,30 @@ db_conn = init_db()
 # =========================
 def gpio_poll_loop():
     global last_valid_ts, stroke_count
-    prev_state = 1  # HIGH (プルアップ)
+    prev_state = lgpio.gpio_read(chip, GPIO_PIN)
+    transition_count = 0
 
     while not stop_event.is_set():
         state = lgpio.gpio_read(chip, GPIO_PIN)
 
-        # HIGH → LOW 遷移を検出（立ち下がり）
-        if prev_state == 1 and state == 0:
+        # 状態変化をすべてログ
+        if state != prev_state:
+            transition_count += 1
             now_ms = time.time() * 1000
+            print(f"[GPIO] {prev_state}->{state}  transition#{transition_count}  t={now_ms:.0f}", flush=True)
 
-            if time.time() - start_time >= STARTUP_IGNORE_SEC:
-                if last_valid_ts is None or (now_ms - last_valid_ts) >= MIN_INTERVAL_MS:
-                    last_valid_ts = now_ms
-                    stroke_count += 1
-                    ts = int(now_ms)
-                    with buffer_lock:
-                        ram_buffer.append(ts)
-                    print(f"[COUNT] {stroke_count}", flush=True)
+            # HIGH → LOW 遷移を検出（立ち下がり）
+            if prev_state == 1 and state == 0:
+                if time.time() - start_time >= STARTUP_IGNORE_SEC:
+                    if last_valid_ts is None or (now_ms - last_valid_ts) >= MIN_INTERVAL_MS:
+                        last_valid_ts = now_ms
+                        stroke_count += 1
+                        ts = int(now_ms)
+                        with buffer_lock:
+                            ram_buffer.append(ts)
+                        print(f"[COUNT] {stroke_count}", flush=True)
+                    else:
+                        print(f"[SKIP] interval={now_ms - last_valid_ts:.0f}ms < {MIN_INTERVAL_MS}ms", flush=True)
 
         prev_state = state
         time.sleep(POLL_INTERVAL_S)
