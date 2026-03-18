@@ -14,13 +14,8 @@ import requests
 # =========================
 GPIO_PIN = 17
 
-ACTIVE_LEVEL = 0      # 押したとき LOW
-INACTIVE_LEVEL = 1    # 通常 HIGH
-
-GLITCH_FILTER_US = 1000
-MIN_INTERVAL_MS = 120
-MIN_PULSE_MS = 10
-MAX_PULSE_MS = 2000
+GLITCH_FILTER_US = 5000
+MIN_INTERVAL_MS = 500
 STARTUP_IGNORE_SEC = 5
 
 DB_FLUSH_INTERVAL = 3
@@ -47,7 +42,6 @@ RASPI_NO = load_raspi_no()
 # グローバル変数
 # =========================
 chip = None
-press_ts = None
 last_valid_ts = None
 
 stroke_count = 0
@@ -87,42 +81,26 @@ db_conn = init_db()
 # GPIO Callback
 # =========================
 def gpio_callback(chip_handle, gpio, level, timestamp_ns):
-    global press_ts, last_valid_ts, stroke_count
+    global last_valid_ts, stroke_count
 
     if time.time() - start_time < STARTUP_IGNORE_SEC:
         return
 
-    # 押した瞬間
-    if level == ACTIVE_LEVEL:
-        press_ts = timestamp_ns
-        return
-
-    # 離した瞬間
-    if level == INACTIVE_LEVEL and press_ts is not None:
-
-        pulse_ns = timestamp_ns - press_ts
-        pulse_ms = pulse_ns / 1_000_000.0
-
-        if pulse_ms < MIN_PULSE_MS or pulse_ms > MAX_PULSE_MS:
-            press_ts = None
+    now_ns = timestamp_ns
+    if last_valid_ts is not None:
+        interval_ms = (now_ns - last_valid_ts) / 1_000_000.0
+        if interval_ms < MIN_INTERVAL_MS:
             return
 
-        if last_valid_ts is not None:
-            interval_ms = (timestamp_ns - last_valid_ts) / 1_000_000.0
-            if interval_ms < MIN_INTERVAL_MS:
-                press_ts = None
-                return
+    last_valid_ts = now_ns
+    stroke_count += 1
 
-        last_valid_ts = timestamp_ns
-        stroke_count += 1
-        press_ts = None
+    ts = int(time.time() * 1000)
 
-        ts = int(time.time() * 1000)
+    with buffer_lock:
+        ram_buffer.append(ts)
 
-        with buffer_lock:
-            ram_buffer.append(ts)
-
-        print(f"[COUNT] {stroke_count}  pulse={pulse_ms:.2f}ms", flush=True)
+    print(f"[COUNT] {stroke_count}", flush=True)
 
 # =========================
 # DB Flush
@@ -221,8 +199,8 @@ def main():
     chip = lgpio.gpiochip_open(0)
     lgpio.gpio_claim_input(chip, GPIO_PIN, lgpio.SET_PULL_UP)
     lgpio.gpio_set_debounce_micros(chip, GPIO_PIN, GLITCH_FILTER_US)
-    lgpio.gpio_claim_alert(chip, GPIO_PIN, lgpio.BOTH_EDGES)
-    cb = lgpio.callback(chip, GPIO_PIN, lgpio.BOTH_EDGES, gpio_callback)
+    lgpio.gpio_claim_alert(chip, GPIO_PIN, lgpio.FALLING_EDGE)
+    cb = lgpio.callback(chip, GPIO_PIN, lgpio.FALLING_EDGE, gpio_callback)
 
     threading.Thread(target=db_flush_loop, daemon=True).start()
     threading.Thread(target=api_sender_loop, daemon=True).start()
