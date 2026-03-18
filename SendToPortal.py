@@ -14,8 +14,8 @@ import requests
 # =========================
 GPIO_PIN = 17
 
-GLITCH_FILTER_US = 5000
-MIN_INTERVAL_MS = 500
+POLL_INTERVAL_S = 0.005   # 5ms ポーリング間隔
+MIN_INTERVAL_MS = 200     # SPM180(サイクル333ms)対応
 STARTUP_IGNORE_SEC = 5
 
 DB_FLUSH_INTERVAL = 3
@@ -78,29 +78,30 @@ def init_db():
 db_conn = init_db()
 
 # =========================
-# GPIO Callback
+# GPIO ポーリング
 # =========================
-def gpio_callback(chip_handle, gpio, level, timestamp_ns):
+def gpio_poll_loop():
     global last_valid_ts, stroke_count
+    prev_state = 1  # HIGH (プルアップ)
 
-    if time.time() - start_time < STARTUP_IGNORE_SEC:
-        return
+    while not stop_event.is_set():
+        state = lgpio.gpio_read(chip, GPIO_PIN)
 
-    now_ns = timestamp_ns
-    if last_valid_ts is not None:
-        interval_ms = (now_ns - last_valid_ts) / 1_000_000.0
-        if interval_ms < MIN_INTERVAL_MS:
-            return
+        # HIGH → LOW 遷移を検出（立ち下がり）
+        if prev_state == 1 and state == 0:
+            now_ms = time.time() * 1000
 
-    last_valid_ts = now_ns
-    stroke_count += 1
+            if time.time() - start_time >= STARTUP_IGNORE_SEC:
+                if last_valid_ts is None or (now_ms - last_valid_ts) >= MIN_INTERVAL_MS:
+                    last_valid_ts = now_ms
+                    stroke_count += 1
+                    ts = int(now_ms)
+                    with buffer_lock:
+                        ram_buffer.append(ts)
+                    print(f"[COUNT] {stroke_count}", flush=True)
 
-    ts = int(time.time() * 1000)
-
-    with buffer_lock:
-        ram_buffer.append(ts)
-
-    print(f"[COUNT] {stroke_count}", flush=True)
+        prev_state = state
+        time.sleep(POLL_INTERVAL_S)
 
 # =========================
 # DB Flush
@@ -198,14 +199,12 @@ def main():
 
     chip = lgpio.gpiochip_open(0)
     lgpio.gpio_claim_input(chip, GPIO_PIN, lgpio.SET_PULL_UP)
-    lgpio.gpio_set_debounce_micros(chip, GPIO_PIN, GLITCH_FILTER_US)
-    lgpio.gpio_claim_alert(chip, GPIO_PIN, lgpio.FALLING_EDGE)
-    cb = lgpio.callback(chip, GPIO_PIN, lgpio.FALLING_EDGE, gpio_callback)
 
+    threading.Thread(target=gpio_poll_loop, daemon=True).start()
     threading.Thread(target=db_flush_loop, daemon=True).start()
     threading.Thread(target=api_sender_loop, daemon=True).start()
 
-    print(f"Press Counter Started [{RASPI_NO}]", flush=True)
+    print(f"Press Counter Started [{RASPI_NO}] (polling {POLL_INTERVAL_S*1000:.0f}ms)", flush=True)
 
     try:
         while True:
@@ -213,7 +212,7 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        cb.cancel()
+        stop_event.set()
         lgpio.gpiochip_close(chip)
 
 if __name__ == "__main__":
