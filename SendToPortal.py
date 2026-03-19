@@ -16,7 +16,8 @@ GPIO_PIN = 17
 
 POLL_INTERVAL_S = 0.005   # 5ms ポーリング間隔
 MIN_INTERVAL_MS = 200     # SPM180(サイクル333ms)対応
-CONFIRM_MS = 50           # LOW確認時間（バウンス除去）
+MIN_HIGH_MS = 50          # HIGH最低持続時間（バウンス除去）
+CONFIRM_MS = 20           # LOW維持確認（ノイズ除去）
 STARTUP_IGNORE_SEC = 5
 
 DB_FLUSH_INTERVAL = 3
@@ -84,33 +85,42 @@ db_conn = init_db()
 def gpio_poll_loop():
     global last_valid_ts, stroke_count
     prev_state = lgpio.gpio_read(chip, GPIO_PIN)
+    high_start = time.time() if prev_state == 1 else None
 
     while not stop_event.is_set():
         state = lgpio.gpio_read(chip, GPIO_PIN)
 
-        # HIGH → LOW 遷移を検出
-        if prev_state == 1 and state == 0:
-            # LOWがCONFIRM_MS間維持されるか確認（バウンス除去）
-            confirm_start = time.time()
-            confirmed = True
-            while (time.time() - confirm_start) * 1000 < CONFIRM_MS:
-                if lgpio.gpio_read(chip, GPIO_PIN) != 0:
-                    confirmed = False
-                    break
-                time.sleep(POLL_INTERVAL_S)
+        if state != prev_state:
+            if state == 1:
+                # LOW→HIGH: HIGH開始時刻を記録
+                high_start = time.time()
+            elif state == 0 and prev_state == 1:
+                # HIGH→LOW遷移
+                # フィルタ1: 直前HIGH持続チェック（バウンス除去）
+                high_ms = (time.time() - high_start) * 1000 if high_start else 0
+                if high_ms >= MIN_HIGH_MS:
+                    # フィルタ2: LOW維持確認（ノイズ除去）
+                    confirm_start = time.time()
+                    confirmed = True
+                    while (time.time() - confirm_start) * 1000 < CONFIRM_MS:
+                        if lgpio.gpio_read(chip, GPIO_PIN) != 0:
+                            confirmed = False
+                            break
+                        time.sleep(POLL_INTERVAL_S)
 
-            if confirmed:
-                now_ms = time.time() * 1000
-                if time.time() - start_time >= STARTUP_IGNORE_SEC:
-                    if last_valid_ts is None or (now_ms - last_valid_ts) >= MIN_INTERVAL_MS:
-                        last_valid_ts = now_ms
-                        stroke_count += 1
-                        ts = int(now_ms)
-                        with buffer_lock:
-                            ram_buffer.append(ts)
-                        print(f"[COUNT] {stroke_count}", flush=True)
+                    if confirmed:
+                        now_ms = time.time() * 1000
+                        if time.time() - start_time >= STARTUP_IGNORE_SEC:
+                            # フィルタ3: 最小間隔チェック
+                            if last_valid_ts is None or (now_ms - last_valid_ts) >= MIN_INTERVAL_MS:
+                                last_valid_ts = now_ms
+                                stroke_count += 1
+                                ts = int(now_ms)
+                                with buffer_lock:
+                                    ram_buffer.append(ts)
+                                print(f"[COUNT] {stroke_count}", flush=True)
 
-        prev_state = state
+            prev_state = state
         time.sleep(POLL_INTERVAL_S)
 
 # =========================
