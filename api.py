@@ -171,6 +171,7 @@ async def dashboard():
 </div>
 
 <div class="summary-row">
+  <div class="summary-card"><div class="num" id="cnt-spm">-</div><div class="label">SPM (1min)</div></div>
   <div class="summary-card"><div class="num" id="cnt-total">-</div><div class="label">Today Events</div></div>
   <div class="summary-card"><div class="num" id="cnt-uptime">-</div><div class="label">稼働率 (Today)</div></div>
   <div class="summary-card"><div class="num" id="cnt-status">-</div><div class="label">現在の状態</div></div>
@@ -297,6 +298,11 @@ async function refresh() {
     const segsHour = buildSegments(dHour.events, hourStart, hourEnd);
     renderBar('bar-hour', segsHour, hourStart, hourEnd);
     renderAxis('axis-hour', hourStart, hourEnd, 12);
+
+    // SPM: 過去1分間のイベント数
+    const spmStart = now - 60000;
+    const spm = dHour.events.filter(ts => ts >= spmStart).length;
+    document.getElementById('cnt-spm').textContent = spm;
 
     // summary
     document.getElementById('cnt-total').textContent = dDay.events.length;
