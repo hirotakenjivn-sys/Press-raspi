@@ -189,17 +189,18 @@ def api_sender_loop():
 
                 print(f"[API] {batch_count}  ({sent_total}/{stroke_count})", flush=True)
 
-            else:
-                api_err_count += 1
-                if now - last_err_log >= 60:
-                    print(f"[API ERROR] {r.status_code} (x{api_err_count})", flush=True)
-                    last_err_log = now
+            # else:
+            #     api_err_count += 1
+            #     if now - last_err_log >= 60:
+            #         print(f"[API ERROR] {r.status_code} (x{api_err_count})", flush=True)
+            #         last_err_log = now
 
-        except Exception as e:
-            api_err_count += 1
-            if now - last_err_log >= 60:
-                print(f"[API ERROR] {e} (x{api_err_count})", flush=True)
-                last_err_log = now
+        except Exception:
+            pass
+            # api_err_count += 1
+            # if now - last_err_log >= 60:
+            #     print(f"[API ERROR] {e} (x{api_err_count})", flush=True)
+            #     last_err_log = now
 
 # =========================
 # Main
