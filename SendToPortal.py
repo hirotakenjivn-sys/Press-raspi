@@ -4,6 +4,7 @@
 import time
 import sqlite3
 import threading
+import signal
 from pathlib import Path
 import lgpio
 import requests
@@ -241,15 +242,21 @@ def main():
 
     print(f"Press Counter Started [{RASPI_NO}] (polling {POLL_INTERVAL_S*1000:.0f}ms) count={stroke_count}", flush=True)
 
+    def shutdown(signum, frame):
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, shutdown)
+
     try:
         while True:
             time.sleep(1)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
         pass
     finally:
         stop_event.set()
         CLEAN_SHUTDOWN_FLAG.write_text("1")
         lgpio.gpiochip_close(chip)
+        print("[SHUTDOWN] clean shutdown flag written", flush=True)
 
 if __name__ == "__main__":
     main()
