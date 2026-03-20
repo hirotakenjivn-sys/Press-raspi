@@ -5,6 +5,7 @@ import time
 import sqlite3
 import threading
 import signal
+import os
 from pathlib import Path
 import lgpio
 import requests
@@ -15,7 +16,7 @@ import requests
 # =========================
 GPIO_PIN = 17
 
-POLL_INTERVAL_S = 0.005   # 5ms ポーリング間隔
+POLL_INTERVAL_S = 0.02    # 20ms ポーリング間隔（CPU負荷軽減）
 MIN_INTERVAL_MS = 200     # SPM180(サイクル333ms)対応
 MIN_HIGH_MS = 50          # HIGH最低持続時間（バウンス除去）
 CONFIRM_MS = 20           # LOW維持確認（ノイズ除去）
@@ -24,6 +25,8 @@ STARTUP_IGNORE_SEC = 5
 DB_FLUSH_INTERVAL = 3
 API_SEND_INTERVAL = 20
 API_BATCH_SIZE = 100
+SYS_MONITOR_INTERVAL = 600  # 10分ごと
+DB_CLEANUP_INTERVAL = 3600  # 1時間ごと
 
 API_URL = "http://192.168.50.63:8000/api/iot/events"
 
@@ -158,10 +161,10 @@ def api_sender_loop():
     global last_api_send, sent_total
     http = requests.Session()
     api_err_count = 0
-    last_err_log = 0
+    backoff = 1
 
     while not stop_event.is_set():
-        time.sleep(1)
+        time.sleep(backoff)
         now = time.time()
 
         with db_lock:
@@ -203,21 +206,68 @@ def api_sender_loop():
                 if api_err_count > 0:
                     print(f"[API] recovered after {api_err_count} errors", flush=True)
                 api_err_count = 0
+                backoff = 1
 
                 print(f"[API] {batch_count}  ({sent_total}/{stroke_count})", flush=True)
 
-            # else:
-            #     api_err_count += 1
-            #     if now - last_err_log >= 60:
-            #         print(f"[API ERROR] {r.status_code} (x{api_err_count})", flush=True)
-            #         last_err_log = now
+        except Exception:
+            api_err_count += 1
+            backoff = min(backoff * 2, 60)  # 1s → 2s → 4s → ... → 60s
 
+# =========================
+# システム監視（10分ごと）
+# =========================
+def sys_monitor_loop():
+    while not stop_event.is_set():
+        time.sleep(SYS_MONITOR_INTERVAL)
+        try:
+            # CPU温度
+            temp = "?"
+            try:
+                with open("/sys/class/thermal/thermal_zone0/temp") as f:
+                    temp = f"{int(f.read().strip()) / 1000:.1f}"
+            except Exception:
+                pass
+
+            # メモリ
+            mem_info = "?"
+            try:
+                with open("/proc/meminfo") as f:
+                    lines = f.readlines()
+                total = int(lines[0].split()[1]) // 1024
+                avail = int(lines[2].split()[1]) // 1024
+                mem_info = f"{total - avail}/{total}MB"
+            except Exception:
+                pass
+
+            # DBサイズ
+            db_size = "?"
+            try:
+                size = os.path.getsize(DB_PATH)
+                db_size = f"{size / 1024 / 1024:.1f}MB"
+            except Exception:
+                pass
+
+            print(f"[SYS] temp={temp}°C  mem={mem_info}  db={db_size}  count={stroke_count}", flush=True)
         except Exception:
             pass
-            # api_err_count += 1
-            # if now - last_err_log >= 60:
-            #     print(f"[API ERROR] {e} (x{api_err_count})", flush=True)
-            #     last_err_log = now
+
+# =========================
+# DB掃除（1時間ごと）
+# =========================
+def db_cleanup_loop():
+    while not stop_event.is_set():
+        time.sleep(DB_CLEANUP_INTERVAL)
+        try:
+            with db_lock:
+                cur = db_conn.cursor()
+                cur.execute("DELETE FROM events WHERE sent=1")
+                deleted = cur.rowcount
+                if deleted > 0:
+                    db_conn.commit()
+                    print(f"[DB] cleaned {deleted} sent records", flush=True)
+        except Exception:
+            pass
 
 # =========================
 # Main
@@ -239,6 +289,8 @@ def main():
     threading.Thread(target=gpio_poll_loop, daemon=True).start()
     threading.Thread(target=db_flush_loop, daemon=True).start()
     threading.Thread(target=api_sender_loop, daemon=True).start()
+    threading.Thread(target=sys_monitor_loop, daemon=True).start()
+    threading.Thread(target=db_cleanup_loop, daemon=True).start()
 
     print(f"Press Counter Started [{RASPI_NO}] (polling {POLL_INTERVAL_S*1000:.0f}ms) count={stroke_count}", flush=True)
 
