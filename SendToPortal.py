@@ -28,6 +28,7 @@ API_URL = "http://192.168.50.63:8000/api/iot/events"
 
 DB_PATH = Path(__file__).with_name("press_events.db")
 CONFIG_PATH = Path(__file__).with_name("config.txt")
+CLEAN_SHUTDOWN_FLAG = Path(__file__).with_name(".clean_shutdown")
 
 # =========================
 # raspi_no をconfig.txtから読み込み
@@ -46,7 +47,7 @@ RASPI_NO = load_raspi_no()
 chip = None
 last_valid_ts = None
 
-stroke_count = 0
+stroke_count = 0  # init_db()後にload_stroke_count()で上書き
 sent_total = 0
 
 ram_buffer = []
@@ -78,6 +79,11 @@ def init_db():
     return conn
 
 db_conn = init_db()
+
+def load_stroke_count():
+    cur = db_conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM events")
+    return cur.fetchone()[0]
 
 # =========================
 # GPIO ポーリング
@@ -216,7 +222,15 @@ def api_sender_loop():
 # Main
 # =========================
 def main():
-    global chip
+    global chip, stroke_count
+
+    if CLEAN_SHUTDOWN_FLAG.exists():
+        stroke_count = 0
+        CLEAN_SHUTDOWN_FLAG.unlink()
+        print("[INIT] clean restart -> count=0", flush=True)
+    else:
+        stroke_count = load_stroke_count()
+        print(f"[INIT] power recovery -> count={stroke_count}", flush=True)
 
     chip = lgpio.gpiochip_open(0)
     lgpio.gpio_claim_input(chip, GPIO_PIN, lgpio.SET_PULL_UP)
@@ -225,7 +239,7 @@ def main():
     threading.Thread(target=db_flush_loop, daemon=True).start()
     threading.Thread(target=api_sender_loop, daemon=True).start()
 
-    print(f"Press Counter Started [{RASPI_NO}] (polling {POLL_INTERVAL_S*1000:.0f}ms)", flush=True)
+    print(f"Press Counter Started [{RASPI_NO}] (polling {POLL_INTERVAL_S*1000:.0f}ms) count={stroke_count}", flush=True)
 
     try:
         while True:
@@ -234,6 +248,7 @@ def main():
         pass
     finally:
         stop_event.set()
+        CLEAN_SHUTDOWN_FLAG.write_text("1")
         lgpio.gpiochip_close(chip)
 
 if __name__ == "__main__":
